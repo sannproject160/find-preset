@@ -30,27 +30,37 @@ function urlsIn(text) {
   return [...new Set((String(text || '').match(LINK_RE) || []).map(u => u.replace(/[.,;!?]+$/, '')))];
 }
 
-async function getComments(videoUrl) {
+async function getComments(target) {
   const key = process.env.RAPIDAPI_KEY;
-  if (!key) return { list: [], note: 'RAPIDAPI_KEY belum diatur' };
+  if (!key) return { list: [], note: 'RAPIDAPI_KEY belum diatur di Vercel' };
   const host = process.env.RAPIDAPI_HOST || 'tiktok-scraper7.p.rapidapi.com';
   const path = process.env.RAPIDAPI_PATH || '/comment/list';
   let cursor = 0, list = [], note = null;
   for (let i = 0; i < PAGES; i++) {
-    try {
-      const q = `url=${encodeURIComponent(videoUrl)}&count=${PER_PAGE}&cursor=${cursor}`;
-      const r = await timedFetch(`https://${host}${path}?${q}`, 10000,
-        { headers: { 'x-rapidapi-key': key, 'x-rapidapi-host': host } });
-      if (r.status === 429) { note = 'Kuota API komentar habis'; break; }
-      if (!r.ok) { note = 'API komentar error ' + r.status; break; }
-      const j = await r.json();
-      const d = (j && j.data) || {};
-      list = list.concat(Array.isArray(d.comments) ? d.comments : []);
-      if (!d.hasMore || d.cursor == null) break;
-      cursor = d.cursor;
-    } catch (e) { note = 'API komentar tidak merespons'; break; }
+    let ok = false;
+    for (let attempt = 0; attempt < 2 && !ok; attempt++) {
+      try {
+        const q = `url=${encodeURIComponent(target)}&count=${PER_PAGE}&cursor=${cursor}`;
+        const r = await timedFetch(`https://${host}${path}?${q}`, 12000,
+          { headers: { 'x-rapidapi-key': key, 'x-rapidapi-host': host, accept: 'application/json' } });
+        const txt = await r.text();
+        if (r.status === 429) { note = 'Kuota/limit API komentar habis (429)'; i = PAGES; break; }
+        if (r.status === 401 || r.status === 403) { note = 'API key ditolak (' + r.status + '): cek RAPIDAPI_KEY dan subscribe'; i = PAGES; break; }
+        if (!r.ok) { note = 'API komentar error ' + r.status + ': ' + txt.slice(0, 80); continue; }
+        let j; try { j = JSON.parse(txt); } catch { note = 'Respons API komentar bukan JSON: ' + txt.slice(0, 60); continue; }
+        if (j.code !== undefined && j.code !== 0) { note = 'API komentar: ' + (j.msg || 'gagal'); continue; }
+        const d = j.data || {};
+        list = list.concat(Array.isArray(d.comments) ? d.comments : []);
+        ok = true; note = null;
+        if (!d.hasMore || d.cursor == null) i = PAGES;
+        else cursor = d.cursor;
+      } catch (e) {
+        note = 'API komentar gagal (' + (e.cause && e.cause.code || e.name) + ': ' + String(e.message).slice(0, 60) + ')';
+      }
+    }
+    if (!ok) break;
   }
-  return { list, note };
+  return { list, note: list.length ? null : note };
 }
 
 module.exports = async (req, res) => {
@@ -63,13 +73,12 @@ module.exports = async (req, res) => {
     if (!/^https?:$/.test(u.protocol) || !TIKTOK_HOST.test(u.hostname))
       return json(res, 400, { ok: false, error: 'Link harus dari tiktok.com (termasuk vm.tiktok.com / vt.tiktok.com).' });
 
-    // Video info + komentar berjalan paralel
-    const [oe, cm] = await Promise.all([
-      timedFetch('https://www.tiktok.com/oembed?url=' + encodeURIComponent(u.href)),
-      getComments(u.href),
-    ]);
+    const oe = await timedFetch('https://www.tiktok.com/oembed?url=' + encodeURIComponent(u.href));
     if (!oe.ok) return json(res, 404, { ok: false, error: 'Video tidak ditemukan atau akun diprivat.' });
     const v = await oe.json();
+    // Pakai ID video dari oEmbed (lebih stabil daripada link pendek)
+    const m = String(v.html || '').match(/data-video-id="(\d+)"/);
+    const cm = await getComments(m ? m[1] : u.href);
     const author = String(v.author_unique_id || '').toLowerCase();
 
     const sources = {};
