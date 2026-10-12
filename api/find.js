@@ -31,9 +31,11 @@ function urlsIn(text) {
 }
 
 async function getComments(target) {
-  const key = process.env.RAPIDAPI_KEY;
+  // Buang spasi, enter, tanda kutip, dan karakter tak terlihat yang sering ikut saat copy-paste
+  const clean = v => String(v || '').replace(/[^\x21-\x7E]/g, '').replace(/["'`]/g, '');
+  const key = clean(process.env.RAPIDAPI_KEY);
   if (!key) return { list: [], note: 'RAPIDAPI_KEY belum diatur di Vercel' };
-  const host = process.env.RAPIDAPI_HOST || 'tiktok-scraper7.p.rapidapi.com';
+  const host = clean(process.env.RAPIDAPI_HOST) || 'tiktok-scraper7.p.rapidapi.com';
   const path = process.env.RAPIDAPI_PATH || '/comment/list';
   let cursor = 0, list = [], note = null;
   for (let i = 0; i < PAGES; i++) {
@@ -55,7 +57,7 @@ async function getComments(target) {
         if (!d.hasMore || d.cursor == null) i = PAGES;
         else cursor = d.cursor;
       } catch (e) {
-        note = 'API komentar gagal (' + (e.cause && e.cause.code || e.name) + ': ' + String(e.message).slice(0, 60) + ')';
+        note = /Headers|header/i.test(String(e.message)) ? 'Format RAPIDAPI_KEY di Vercel tidak valid, isi ulang' : 'API komentar gagal (' + (e.cause && e.cause.code || e.name) + ')';
       }
     }
     if (!ok) break;
